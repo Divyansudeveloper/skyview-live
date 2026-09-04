@@ -82,34 +82,8 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
-  // ===== OpenSky OAuth2 credentials (free account) =====
-  const CLIENT_ID = "divyansuanand-api-client";
-  const CLIENT_SECRET = "apu3DDfmTjwiSLYTJsPqOnFcHho0q5Ts";
-  const TOKEN_URL = "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token";
-
-  let accessToken = null;
-  let tokenExpiryTime = 0;
-
-  async function getAccessToken() {
-    const now = Date.now();
-    if (accessToken && now < tokenExpiryTime) return accessToken;
-
-    const res = await fetch(TOKEN_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        grant_type: "client_credentials",
-        client_id: CLIENT_ID,
-        client_secret: CLIENT_SECRET
-      })
-    });
-    if (!res.ok) throw new Error("Token request failed: " + res.status);
-    const data = await res.json();
-    accessToken = data.access_token;
-    // refresh 60s before actual expiry
-    tokenExpiryTime = now + (data.expires_in - 60) * 1000;
-    return accessToken;
-  }
+  // Our own backend proxy (avoids CORS issues with OpenSky's auth server)
+  const BACKEND_URL = "https://skyview-backend-30mb.onrender.com";
 
   // Map centered over India (change bounding box below to track a different region)
   const map = L.map('map', { zoomControl: true }).setView([22.5, 78.9], 5);
@@ -133,12 +107,9 @@
 
   async function fetchFlights() {
     try {
-      const token = await getAccessToken();
-      const apiUrl = `https://opensky-network.org/api/states/all?lamin=${BBOX.lamin}&lomin=${BBOX.lomin}&lamax=${BBOX.lamax}&lomax=${BBOX.lomax}`;
+      const apiUrl = `${BACKEND_URL}/api/flights?lamin=${BBOX.lamin}&lomin=${BBOX.lomin}&lamax=${BBOX.lamax}&lomax=${BBOX.lomax}`;
 
-      const res = await fetch(apiUrl, {
-        headers: { "Authorization": "Bearer " + token }
-      });
+      const res = await fetch(apiUrl);
       if (!res.ok) throw new Error("API request failed: " + res.status);
       const data = await res.json();
       const states = data.states || [];
