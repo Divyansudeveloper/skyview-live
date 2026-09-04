@@ -20,18 +20,10 @@
   }
   header h1 { font-size: 20px; font-weight: 600; }
   header h1 span { color: #4da3ff; }
-  .stats {
-    display: flex;
-    gap: 20px;
-    flex-wrap: wrap;
-  }
+  .stats { display: flex; gap: 20px; flex-wrap: wrap; }
   .stat-box {
-    background: #161c2b;
-    padding: 8px 16px;
-    border-radius: 8px;
-    text-align: center;
-    min-width: 100px;
-    border: 1px solid #232b3d;
+    background: #161c2b; padding: 8px 16px; border-radius: 8px;
+    text-align: center; min-width: 100px; border: 1px solid #232b3d;
   }
   .stat-box .num { font-size: 20px; font-weight: 700; color: #4da3ff; }
   .stat-box .label { font-size: 11px; color: #9aa4b8; margin-top: 2px; }
@@ -43,9 +35,7 @@
     background: #22c55e; display: inline-block; margin-right: 6px;
     animation: pulse 1.5s infinite;
   }
-  @keyframes pulse {
-    0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; }
-  }
+  @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
   .loading-msg {
     position: absolute; top: 90px; left: 50%; transform: translateX(-50%);
     background: #161c2b; padding: 10px 18px; border-radius: 8px;
@@ -78,23 +68,23 @@
 </header>
 
 <div id="map"></div>
-<div class="loading-msg" id="loadingMsg">Signing in and fetching live flight data...</div>
+<div class="loading-msg" id="loadingMsg">Fetching live flight data...</div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
-  // Our own backend proxy (avoids CORS issues with OpenSky's auth server)
-  const BACKEND_URL = "https://skyview-backend-30mb.onrender.com";
+  // Free, no-auth flight tracking API (ADS-B Exchange v2 compatible format)
+  // Centered near India, 250nm radius (max allowed)
+  const CENTER_LAT = 22.97;
+  const CENTER_LON = 78.65;
+  const RADIUS_NM = 250;
+  const API_URL = `https://api.adsb.one/v2/point/${CENTER_LAT}/${CENTER_LON}/${RADIUS_NM}`;
 
-  // Map centered over India (change bounding box below to track a different region)
-  const map = L.map('map', { zoomControl: true }).setView([22.5, 78.9], 5);
+  const map = L.map('map', { zoomControl: true }).setView([CENTER_LAT, CENTER_LON], 5);
 
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '&copy; OpenStreetMap contributors',
     maxZoom: 19
   }).addTo(map);
-
-  // Bounding box: India region (lamin, lomin, lamax, lomax)
-  const BBOX = { lamin: 6, lomin: 68, lamax: 37, lomax: 97 };
 
   let markers = [];
 
@@ -107,38 +97,38 @@
 
   async function fetchFlights() {
     try {
-      const apiUrl = `${BACKEND_URL}/api/flights?lamin=${BBOX.lamin}&lomin=${BBOX.lomin}&lamax=${BBOX.lamax}&lomax=${BBOX.lomax}`;
-
-      const res = await fetch(apiUrl);
+      const res = await fetch(API_URL);
       if (!res.ok) throw new Error("API request failed: " + res.status);
       const data = await res.json();
-      const states = data.states || [];
+      const aircraft = data.ac || [];
 
-      // clear old markers
       markers.forEach(m => map.removeLayer(m));
       markers = [];
 
       let totalAlt = 0, totalSpeed = 0, validAlt = 0, validSpeed = 0;
 
-      states.forEach(s => {
-        const [icao24, callsign, origin_country, , , lon, lat, baro_altitude, , velocity, heading] = s;
-        if (lat == null || lon == null) return;
+      aircraft.forEach(a => {
+        if (a.lat == null || a.lon == null) return;
 
-        if (baro_altitude != null) { totalAlt += baro_altitude; validAlt++; }
-        if (velocity != null) { totalSpeed += velocity * 3.6; validSpeed++; } // m/s -> km/h
+        const altFt = typeof a.alt_baro === 'number' ? a.alt_baro : null;
+        const altM = altFt != null ? Math.round(altFt * 0.3048) : null;
+        const speedKmh = a.gs != null ? Math.round(a.gs * 1.852) : null;
 
-        const marker = L.marker([lat, lon], { icon: planeIcon(heading) })
+        if (altM != null) { totalAlt += altM; validAlt++; }
+        if (speedKmh != null) { totalSpeed += speedKmh; validSpeed++; }
+
+        const marker = L.marker([a.lat, a.lon], { icon: planeIcon(a.track) })
           .addTo(map)
           .bindPopup(`
-            <b>${callsign ? callsign.trim() : 'Unknown'}</b><br/>
-            Country: ${origin_country}<br/>
-            Altitude: ${baro_altitude ? Math.round(baro_altitude) + ' m' : 'N/A'}<br/>
-            Speed: ${velocity ? Math.round(velocity * 3.6) + ' km/h' : 'N/A'}
+            <b>${a.flight ? a.flight.trim() : (a.hex || 'Unknown')}</b><br/>
+            Type: ${a.t || 'N/A'}<br/>
+            Altitude: ${altM != null ? altM + ' m' : 'N/A'}<br/>
+            Speed: ${speedKmh != null ? speedKmh + ' km/h' : 'N/A'}
           `);
         markers.push(marker);
       });
 
-      document.getElementById('flightCount').textContent = states.length;
+      document.getElementById('flightCount').textContent = aircraft.length;
       document.getElementById('avgAlt').textContent = validAlt ? Math.round(totalAlt / validAlt) : '--';
       document.getElementById('avgSpeed').textContent = validSpeed ? Math.round(totalSpeed / validSpeed) : '--';
       document.getElementById('lastUpdate').textContent = 'Updated ' + new Date().toLocaleTimeString();
@@ -152,7 +142,7 @@
   }
 
   fetchFlights();
-  setInterval(fetchFlights, 15000); // refresh every 15 seconds
+  setInterval(fetchFlights, 15000);
 </script>
 
 </body>
