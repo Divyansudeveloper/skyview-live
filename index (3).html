@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Live Flight Tracker | SkyView Live</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; background: #0b0f19; color: #eaeef5; }
+  header {
+    padding: 16px 24px;
+    background: #10141f;
+    border-bottom: 1px solid #1f2635;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  header h1 { font-size: 20px; font-weight: 600; }
+  header h1 span { color: #4da3ff; }
+  .stats {
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+  }
+  .stat-box {
+    background: #161c2b;
+    padding: 8px 16px;
+    border-radius: 8px;
+    text-align: center;
+    min-width: 100px;
+    border: 1px solid #232b3d;
+  }
+  .stat-box .num { font-size: 20px; font-weight: 700; color: #4da3ff; }
+  .stat-box .label { font-size: 11px; color: #9aa4b8; margin-top: 2px; }
+  #map { height: calc(100vh - 78px); width: 100%; }
+  .leaflet-popup-content-wrapper { background: #161c2b; color: #eaeef5; }
+  .leaflet-popup-tip { background: #161c2b; }
+  .status-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #22c55e; display: inline-block; margin-right: 6px;
+    animation: pulse 1.5s infinite;
+  }
+  @keyframes pulse {
+    0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; }
+  }
+  .loading-msg {
+    position: absolute; top: 90px; left: 50%; transform: translateX(-50%);
+    background: #161c2b; padding: 10px 18px; border-radius: 8px;
+    font-size: 13px; color: #9aa4b8; z-index: 1000; border: 1px solid #232b3d;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>✈️ Sky<span>View</span> Live — Real-Time Flight Tracker</h1>
+  <div class="stats">
+    <div class="stat-box">
+      <div class="num" id="flightCount">--</div>
+      <div class="label">FLIGHTS IN VIEW</div>
+    </div>
+    <div class="stat-box">
+      <div class="num" id="avgAlt">--</div>
+      <div class="label">AVG ALTITUDE (m)</div>
+    </div>
+    <div class="stat-box">
+      <div class="num" id="avgSpeed">--</div>
+      <div class="label">AVG SPEED (km/h)</div>
+    </div>
+    <div class="stat-box">
+      <div class="num"><span class="status-dot"></span>LIVE</div>
+      <div class="label" id="lastUpdate">updating...</div>
+    </div>
+  </div>
+</header>
+
+<div id="map"></div>
+<div class="loading-msg" id="loadingMsg">Signing in and fetching live flight data...</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+  // ===== OpenSky OAuth2 credentials (free account) =====
+  const CLIENT_ID = "divyansuanand-api-client";
+  const CLIENT_SECRET = "apu3DDfmTjwiSLYTJsPqOnFcHho0q5Ts";
+  const TOKEN_URL = "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token";
+
+  let accessToken = null;
+  let tokenExpiryTime = 0;
+
+  async function getAccessToken() {
+    const now = Date.now();
+    if (accessToken && now < tokenExpiryTime) return accessToken;
+
+    const res = await fetch(TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "client_credentials",
+        client_id: CLIENT_ID,
+        client_secret: CLIENT_SECRET
+      })
+    });
+    if (!res.ok) throw new Error("Token request failed: " + res.status);
+    const data = await res.json();
+    accessToken = data.access_token;
+    // refresh 60s before actual expiry
+    tokenExpiryTime = now + (data.expires_in - 60) * 1000;
+    return accessToken;
+  }
+
+  // Map centered over India (change bounding box below to track a different region)
+  const map = L.map('map', { zoomControl: true }).setView([22.5, 78.9], 5);
+
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap contributors',
+    maxZoom: 19
+  }).addTo(map);
+
+  // Bounding box: India region (lamin, lomin, lamax, lomax)
+  const BBOX = { lamin: 6, lomin: 68, lamax: 37, lomax: 97 };
+
+  let markers = [];
+
+  const planeIcon = (heading) => L.divIcon({
+    className: '',
+    html: `<div style="transform: rotate(${heading || 0}deg); font-size:20px; filter: drop-shadow(0 0 3px #4da3ff);">✈️</div>`,
+    iconSize: [24, 24],
+    iconAnchor: [12, 12]
+  });
+
+  async function fetchFlights() {
+    try {
+      const token = await getAccessToken();
+      const apiUrl = `https://opensky-network.org/api/states/all?lamin=${BBOX.lamin}&lomin=${BBOX.lomin}&lamax=${BBOX.lamax}&lomax=${BBOX.lomax}`;
+
+      const res = await fetch(apiUrl, {
+        headers: { "Authorization": "Bearer " + token }
+      });
+      if (!res.ok) throw new Error("API request failed: " + res.status);
+      const data = await res.json();
+      const states = data.states || [];
+
+      // clear old markers
+      markers.forEach(m => map.removeLayer(m));
+      markers = [];
+
+      let totalAlt = 0, totalSpeed = 0, validAlt = 0, validSpeed = 0;
+
+      states.forEach(s => {
+        const [icao24, callsign, origin_country, , , lon, lat, baro_altitude, , velocity, heading] = s;
+        if (lat == null || lon == null) return;
+
+        if (baro_altitude != null) { totalAlt += baro_altitude; validAlt++; }
+        if (velocity != null) { totalSpeed += velocity * 3.6; validSpeed++; } // m/s -> km/h
+
+        const marker = L.marker([lat, lon], { icon: planeIcon(heading) })
+          .addTo(map)
+          .bindPopup(`
+            <b>${callsign ? callsign.trim() : 'Unknown'}</b><br/>
+            Country: ${origin_country}<br/>
+            Altitude: ${baro_altitude ? Math.round(baro_altitude) + ' m' : 'N/A'}<br/>
+            Speed: ${velocity ? Math.round(velocity * 3.6) + ' km/h' : 'N/A'}
+          `);
+        markers.push(marker);
+      });
+
+      document.getElementById('flightCount').textContent = states.length;
+      document.getElementById('avgAlt').textContent = validAlt ? Math.round(totalAlt / validAlt) : '--';
+      document.getElementById('avgSpeed').textContent = validSpeed ? Math.round(totalSpeed / validSpeed) : '--';
+      document.getElementById('lastUpdate').textContent = 'Updated ' + new Date().toLocaleTimeString();
+      document.getElementById('loadingMsg').style.display = 'none';
+
+    } catch (err) {
+      document.getElementById('loadingMsg').textContent = 'Could not fetch live data — retrying... (' + err.message + ')';
+      document.getElementById('loadingMsg').style.display = 'block';
+      console.error(err);
+    }
+  }
+
+  fetchFlights();
+  setInterval(fetchFlights, 15000); // refresh every 15 seconds
+</script>
+
+</body>
+</html>
